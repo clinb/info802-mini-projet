@@ -8,7 +8,15 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class Configuration:
-    url_wsdl_service_temps: str = os.getenv("URL_WSDL_SERVICE_TEMPS", "http://127.0.0.1:8001/?wsdl")
+    # SOAP
+    url_wsdl_service_temps: str = os.getenv(
+        "URL_WSDL_SERVICE_TEMPS",
+        "http://127.0.0.1:8001/?wsdl"
+    )
+
+    # Open-street
+    openstreet_api_key: str = os.getenv("OPENSTREET_API_KEY", "")
+    openstreet_base_url: str = os.getenv("OPENSTREET_BASE_URL", "https://maps.open-street.com/api")
 
 
 CONFIG = Configuration()

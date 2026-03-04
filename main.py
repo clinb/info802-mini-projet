@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
+import os
 
 from api import router as api_router, graphql_router
 
@@ -18,6 +19,7 @@ app.add_middleware(
         "http://localhost:8000",
         "http://127.0.0.1:5500",
         "http://localhost:5500",
+        "https://info802-mini-projet-ee6d7989c9b7.herokuapp.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -35,3 +37,8 @@ def home():
     return FileResponse(STATIC_DIR / "index.html")
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

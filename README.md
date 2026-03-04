@@ -9,7 +9,7 @@ source .venv/bin/activate
 # .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python app.py
-WSDL: http://localhost:8001/?wsdl
+WSDL: http://localhost:8003/?wsdl
 
 ## 2) Lancer GraphQL Vehicles
 cd ../graphql_vehicles
@@ -17,7 +17,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python app.py
-GraphQL: http://localhost:8002/graphql
+GraphQL: http://localhost:8004/graphql
 
 ## 3) Lancer Planner API (REST)
 cd ../planner_api

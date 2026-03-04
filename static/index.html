@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Planificateur trajet (IRVE)</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; }
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 160px auto;
+      gap: 10px;
+      padding: 12px;
+      border-bottom: 1px solid #ddd;
+      align-items: end;
+    }
+    label { font-size: 12px; color: #444; display: block; margin-bottom: 4px; }
+    input, select, button {
+      width: 100%;
+      padding: 10px;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    button { cursor: pointer; }
+    #map { height: calc(100vh - 74px); }
+    .info {
+      padding: 10px 12px;
+      border-top: 1px solid #eee;
+      font-size: 13px;
+      color: #222;
+      background: #fafafa;
+    }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .muted { color: #666; }
+    .error { color: #a40000; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <label for="fromInput">Départ</label>
+      <input id="fromInput" value="Chambéry" />
+    </div>
+    <div>
+      <label for="toInput">Arrivée</label>
+      <input id="toInput" value="Paris" />
+    </div>
+    <div>
+      <label for="vehicleSelect">Véhicule</label>
+      <select id="vehicleSelect"></select>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px;">
+      <label style="font-size:12px;color:#444;">Distance totale</label>
+      <div style="font-size:14px;font-weight:600;" id="topDist">—</div>
+      <label style="font-size:12px;color:#444;margin-top:6px;">Temps de conduite</label>
+      <div style="font-size:14px;font-weight:600;" id="topDrive">—</div>
+    </div>
+    <div>
+      <button id="calcBtn">Calculer</button>
+    </div>
+  </div>
+
+  <div id="map"></div>
+  <div class="info" id="infoBox">
+    <div class="row">
+      <div><span class="muted">État :</span> <span id="statusText">Prêt</span></div>
+      <div><span class="muted">Distance :</span> <span id="distText">—</span></div>
+      <div><span class="muted">Arrêts :</span> <span id="stopsText">—</span></div>
+      <div><span class="muted">Conduite :</span> <span id="driveText">—</span></div>
+      <div><span class="muted">Charge :</span> <span id="chargeText">—</span></div>
+      <div><span class="muted">Total :</span> <span id="totalText">—</span></div>
+    </div>
+    <div id="errorText" class="error"></div>
+  </div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script src="https://unpkg.com/@mapbox/polyline@1.2.1/src/polyline.js"></script>
+
+  <script>
+    const statusText = document.getElementById("statusText");
+    const errorText = document.getElementById("errorText");
+    const distText = document.getElementById("distText");
+    const stopsText = document.getElementById("stopsText");
+    const driveText = document.getElementById("driveText");
+    const chargeText = document.getElementById("chargeText");
+    const totalText = document.getElementById("totalText");
+
+    function setStatus(msg) { statusText.textContent = msg; }
+    function setError(msg) { errorText.textContent = msg || ""; }
+    function fmtMin(x) { return (x == null) ? "—" : `${Math.round(x)} min`; }
+    function fmtKm(x) { return (x == null) ? "—" : `${x.toFixed(1)} km`; }
+
+    const topDist = document.getElementById('topDist');
+    const topDrive = document.getElementById('topDrive');
+
+    const map = L.map("map").setView([45.566, 5.92], 7);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap"
+    }).addTo(map);
+
+    let routeLayer = null;
+    let stopMarkers = [];
+
+    function clearMap() {
+      if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+      for (const m of stopMarkers) { map.removeLayer(m); }
+      stopMarkers = [];
+    }
+
+    let VEHICLE_LIST = [];
+    const vehicleImage = document.createElement('img');
+    vehicleImage.style.maxHeight = '48px';
+    vehicleImage.style.marginTop = '6px';
+    document.querySelector('.topbar > div:nth-child(3)').appendChild(vehicleImage);
+
+    async function loadVehicles() {
+      const query = `
+        query vehicleListAll {
+          vehicleList {
+            id
+            naming { make model }
+            range { chargetrip_range { best worst } }
+            media { image { thumbnail_url url } }
+          }
+        }
+      `;
+
+      const res = await fetch("/graphql", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query })
+      });
+
+      if (!res.ok) throw new Error("Erreur /graphql : " + await res.text());
+
+      const js = await res.json();
+      if (js.errors) throw new Error("Erreur GraphQL: " + JSON.stringify(js.errors));
+
+      VEHICLE_LIST = js.data.vehicleList || [];
+      const sel = document.getElementById("vehicleSelect");
+      sel.innerHTML = "";
+
+      for (const v of VEHICLE_LIST) {
+        const best = v?.range?.chargetrip_range?.best ?? "—";
+        const opt = document.createElement("option");
+        opt.value = v.id;
+        opt.textContent = `${v.naming.make} ${v.naming.model} — ${best} km`;
+        sel.appendChild(opt);
+      }
+
+      // show image for first vehicle if available
+      if (VEHICLE_LIST.length > 0) {
+        updateVehiclePreview(VEHICLE_LIST[0].id);
+      }
+
+      sel.addEventListener('change', (e) => updateVehiclePreview(e.target.value));
+    }
+
+    function updateVehiclePreview(id) {
+      const v = VEHICLE_LIST.find(x => x.id === id);
+      if (!v) { vehicleImage.src = ''; return; }
+      const thumb = v?.media?.image?.thumbnail_url || v?.media?.image?.url || '';
+      if (thumb) {
+        vehicleImage.src = thumb;
+        vehicleImage.title = `${v.naming.make} ${v.naming.model}`;
+      } else {
+        vehicleImage.src = '';
+      }
+    }
+
+    async function planRoute() {
+      setError("");
+      setStatus("Calcul en cours...");
+      distText.textContent = "—";
+      stopsText.textContent = "—";
+      driveText.textContent = "—";
+      chargeText.textContent = "—";
+      totalText.textContent = "—";
+      clearMap();
+
+      const from = document.getElementById("fromInput").value.trim();
+      const to = document.getElementById("toInput").value.trim();
+      const vehicle_id = document.getElementById("vehicleSelect").value;
+
+      if (!from || !to) {
+        setStatus("Erreur");
+        setError("Veuillez renseigner départ et arrivée.");
+        return;
+      }
+
+      const res = await fetch("/api/plan-route", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from, to, vehicle_id })
+      });
+
+      if (!res.ok) {
+        setStatus("Erreur");
+        setError("API /api/plan-route a échoué : " + await res.text());
+        return;
+      }
+
+      const js = await res.json();
+
+      const coords = polyline.decode(js.route.polyline).map(p => [p[0], p[1]]);
+      routeLayer = L.polyline(coords, { weight: 5, color: "#0066cc" }).addTo(map);
+      
+      // Afficher tous les marqueurs de bornes
+      if (js.stop_points && js.stop_points.length > 0 && js.chargers) {
+        for (let i = 0; i < js.stop_points.length; i++) {
+          const s = js.stop_points[i];
+          const c = js.chargers[i] ? js.chargers[i].charger : null;
+          
+          const icon = L.icon({
+            iconUrl: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMiIgaGVpZ2h0PSI0MCIgdmlld0JveD0iMCAwIDMyIDQwIj48cmVjdCB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIGZpbGw9IiNmZjAwMDAiIHJ4PSI0Ii8+PHRleHQgeD0iMTYiIHk9IjI0IiBmaWxsPSJ3aGl0ZSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIyMCIgZm9udC13ZWlnaHQ9ImJvbGQiPkI8L3RleHQ+PHBvbHlnb24gcG9pbnRzPSIxNiw0MCAwLDMyIDMyLDMyIiBmaWxsPSIjZmYwMDAwIi8+PC9zdmc+",
+            iconSize: [32, 40],
+            iconAnchor: [16, 40],
+            popupAnchor: [0, -40]
+          });
+          
+          const title = (c?.name || "Borne") + (c?.power_kw ? ` (${c.power_kw} kW)` : "");
+          const addr = c?.address || "";
+          const marker = L.marker([s.lat, s.lon], { icon }).addTo(map);
+          let popup = `<b>Arrêt ${i + 1}: ${title}</b><br/>${addr}`;
+          if (c?.route_distance_m != null) {
+            popup += `<br/><small>Distance à la route : ${Math.round(c.route_distance_m)} m</small>`;
+          }
+          marker.bindPopup(popup);
+          stopMarkers.push(marker);
+        }
+      }
+      
+      map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+
+      distText.textContent = fmtKm(js.route.distance_km);
+      stopsText.textContent = js.time.stops > 0 ? `${js.time.stops} arrêt(s)` : "0";
+      driveText.textContent = fmtMin(js.time.drive_time_min);
+      chargeText.textContent = fmtMin(js.time.charge_time_min_total);
+      totalText.textContent = fmtMin(js.time.total_time_min);
+
+      // mirror key values in the topbar for quick glance
+      if (topDist) topDist.textContent = fmtKm(js.route.distance_km);
+      if (topDrive) topDrive.textContent = fmtMin(js.time.drive_time_min);
+
+      setStatus(js.time.message || "OK");
+    }
+
+    document.getElementById("calcBtn").addEventListener("click", planRoute);
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      try {
+        await loadVehicles();
+        setStatus("Prêt");
+      } catch (e) {
+        setStatus("Erreur");
+        setError(String(e));
+      }
+    });
+  </script>
+</body>
+</html>

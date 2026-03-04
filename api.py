@@ -8,6 +8,9 @@ import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, ConfigDict
 
+# Import SOAP service directly (no HTTP calls needed)
+from soap_triptime.app import TripTimeService
+
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -387,6 +390,50 @@ def _nearest_route_index(coords: List[Tuple[float, float]], lat: float, lon: flo
     return best_i
 
 
+# -------------------------
+# SOAP Service Client
+# -------------------------
+def calculate_trip_time_soap(
+    distance_km: float,
+    autonomy_km: float,
+    avg_speed_kmh: float,
+    charge_time_min_per_stop: int
+) -> Dict[str, Any]:
+    """Call SOAP TripTime service to calculate journey time.
+    
+    Returns: {\"stops\": int, \"drive_time_min\": float, \"charge_time_min_total\": float, \"total_time_min\": float, \"message\": str}
+    """
+    try:
+        # Call SOAP service directly in-memory (no HTTP)
+        service = TripTimeService()
+        result = service.estimate_trip_time(
+            distance_km=distance_km,
+            autonomy_km=autonomy_km,
+            avg_speed_kmh=avg_speed_kmh,
+            charge_time_min_per_stop=charge_time_min_per_stop
+        )
+        return {
+            "stops": int(result.stops),
+            "drive_time_min": float(result.drive_time_min),
+            "charge_time_min_total": float(result.charge_time_min_total),
+            "total_time_min": float(result.total_time_min),
+            "message": str(result.message)
+        }
+    except Exception as e:
+        # Fallback: calculate locally if SOAP unavailable
+        stops = max(int(math.ceil(distance_km / autonomy_km)) - 1, 0)
+        drive_time_min = (distance_km / avg_speed_kmh) * 60.0
+        charge_time_min_total = float(stops * charge_time_min_per_stop)
+        total_time_min = drive_time_min + charge_time_min_total
+        return {
+            "stops": stops,
+            "drive_time_min": drive_time_min,
+            "charge_time_min_total": charge_time_min_total,
+            "total_time_min": total_time_min,
+            "message": f"Fallback (SOAP error: {str(e)})"
+        }
+
+
 def choose_best_charger(
     chargers: List[Dict[str, Any]],
     route_coords: Optional[List[Tuple[float, float]]] = None,
@@ -586,9 +633,18 @@ def plan_route(req: PlanRouteRequest) -> Dict[str, Any]:
                     total_duration_s += leg["duration_s"]
 
                 poly = _encode_polyline(all_coords)
-                drive_time_min = total_duration_s / 60.0
-                charge_time_min_total = float(vehicle.get("chargeTimeMin", 25)) * len(selected)
-                total_time_min = drive_time_min + charge_time_min_total
+                # Call SOAP service for trip time calculation
+                avg_speed_kmh = vehicle.get("avgSpeedKmh", 100)
+                charge_time_min_per_stop = vehicle.get("chargeTimeMin", 25)
+                soap_result = calculate_trip_time_soap(
+                    total_distance_m / 1000.0,
+                    vehicle_range_km,
+                    avg_speed_kmh,
+                    charge_time_min_per_stop
+                )
+                drive_time_min = soap_result["drive_time_min"]
+                charge_time_min_total = soap_result["charge_time_min_total"]
+                total_time_min = soap_result["total_time_min"]
 
                 return {
                     "input": {
@@ -669,9 +725,18 @@ def plan_route(req: PlanRouteRequest) -> Dict[str, Any]:
         total_distance_m = part1["distance_m"] + part2["distance_m"]
         total_duration_s = part1["duration_s"] + part2["duration_s"]
 
-        drive_time_min = total_duration_s / 60.0
-        charge_time_min_total = float(vehicle["chargeTimeMin"])
-        total_time_min = drive_time_min + charge_time_min_total
+        # Call SOAP service for trip time calculation
+        avg_speed_kmh = vehicle.get("avgSpeedKmh", 100)
+        charge_time_min_per_stop = vehicle.get("chargeTimeMin", 25)
+        soap_result = calculate_trip_time_soap(
+            total_distance_m / 1000.0,
+            vehicle_range_km,
+            avg_speed_kmh,
+            charge_time_min_per_stop
+        )
+        drive_time_min = soap_result["drive_time_min"]
+        charge_time_min_total = soap_result["charge_time_min_total"]
+        total_time_min = soap_result["total_time_min"]
 
         return {
             "input": {
@@ -700,7 +765,18 @@ def plan_route(req: PlanRouteRequest) -> Dict[str, Any]:
         }
     else:
         # aucune borne trouvée
-        drive_time_min = direct["duration_s"] / 60.0
+        # Call SOAP service for trip time calculation (no charging stops)
+        avg_speed_kmh = vehicle.get("avgSpeedKmh", 100)
+        charge_time_min_per_stop = vehicle.get("chargeTimeMin", 25)
+        soap_result = calculate_trip_time_soap(
+            direct["distance_m"] / 1000.0,
+            vehicle_range_km,
+            avg_speed_kmh,
+            charge_time_min_per_stop
+        )
+        drive_time_min = soap_result["drive_time_min"]
+        charge_time_min_total = soap_result["charge_time_min_total"]
+        total_time_min = soap_result["total_time_min"]
         return {
             "input": {
                 "from": req.from_,
@@ -720,10 +796,10 @@ def plan_route(req: PlanRouteRequest) -> Dict[str, Any]:
             "chargers": [],
             "time": {
                 "message": "OK (aucune borne trouvée)",
-                "stops": 0,
+                "stops": soap_result["stops"],
                 "drive_time_min": drive_time_min,
-                "charge_time_min_total": 0.0,
-                "total_time_min": drive_time_min,
+                "charge_time_min_total": charge_time_min_total,
+                "total_time_min": total_time_min,
             },
         }
 

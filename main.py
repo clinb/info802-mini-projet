@@ -2,10 +2,12 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.wsgi import WSGIMiddleware
 from pathlib import Path
 import os
 
 from api import router as api_router, graphql_router
+from soap_triptime.app import wsgi_app as soap_app
 
 app = FastAPI()
 
@@ -31,6 +33,9 @@ app.include_router(api_router)
 
 # GraphQL minimal
 app.include_router(graphql_router)
+
+# Mount SOAP service as WSGI app (accessible at /soap path)
+app.mount("/soap", WSGIMiddleware(soap_app))
 
 @app.get("/")
 def home():

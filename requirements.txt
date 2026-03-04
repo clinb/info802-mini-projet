@@ -6,7 +6,5 @@ pydantic==2.8.2
 packaging>=24.0
 spyne==2.14.0
 lxml>=4.9
-flask==3.0.3
 requests==2.32.3
-zeep==4.2.1
 polyline==2.0.2
